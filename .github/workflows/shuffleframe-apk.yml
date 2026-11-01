@@ -44,8 +44,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.3.0 >/dev/null 2>&1; then
-            gh release upload v0.3.0 Shuffleframe.apk --clobber
+          if gh release view v0.4.0 >/dev/null 2>&1; then
+            gh release upload v0.4.0 Shuffleframe.apk --clobber
           else
-            gh release create v0.3.0 Shuffleframe.apk --title "Shuffleframe v0.3.0 (testing)" --notes "Persistent background album caching, improved fullscreen viewer with smooth swipes and tap zones. No albums preloaded. Google Photos import is experimental." --prerelease
+            gh release create v0.4.0 Shuffleframe.apk --title "Shuffleframe v0.4.0 (testing)" --notes "Faster parallel photo caching across albums, proper reversible shuffled order, video posters and basic streaming playback, polished album dialogs, app icon. Shared album video detection is experimental." --prerelease
           fi
