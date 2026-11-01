@@ -2,6 +2,12 @@ package com.hasbreo.shuffleframe;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
+import android.graphics.drawable.ColorDrawable;
+import android.view.Window;
+import android.widget.SeekBar;
+import android.widget.VideoView;
+import android.media.MediaPlayer;
 import android.content.ClipData;
 import android.content.Intent;
 import android.content.res.ColorStateList;
@@ -63,6 +69,22 @@ public class MainActivity extends Activity {
     private FrameLayout imageLayer;
     private LinearLayout topOverlay,bottomOverlay;
     private TextView cacheSummary;
+    private VideoView videoView;
+    private LinearLayout videoStrip;
+    private TextView videoButton,videoTime;
+    private SeekBar videoSeek;
+    private boolean videoPrepared=false,videoLoading=false,videoScrubbing=false;
+    private final Runnable videoTicker=new Runnable(){
+        @Override public void run(){
+            if(viewer&&videoView!=null&&videoPrepared&&!videoScrubbing){
+                int current=Math.max(0,videoView.getCurrentPosition());
+                int duration=Math.max(0,videoView.getDuration());
+                videoSeek.setMax(Math.max(1,duration));videoSeek.setProgress(current);
+                videoTime.setText(formatTime(current)+" / "+formatTime(duration));
+            }
+            if(viewer&&videoPrepared)handler.postDelayed(this,450);
+        }
+    };
     private final Map<Album,TextView> albumCacheLabels=new HashMap<>();
     private boolean overlaysVisible=true;
     private final LruCache<String,Bitmap> memory=new LruCache<String,Bitmap>(32*1024) {
@@ -127,7 +149,8 @@ public class MainActivity extends Activity {
         addTop(body,text("Pick one album or combine several. Every photo appears once before the next shuffle.",15,DIM,false),12);
         LinkedHashSet<String> included=photos();
         int selected=0;for(Album a:albums)if(a.enabled)selected++;
-        addTop(body,text(included.size()+" photos  ·  "+selected+" selected albums",13,MINT,true),26);
+        int videoTotal=0;for(String item:included)if(PhotoStorage.isVideo(item))videoTotal++;
+        addTop(body,text(included.size()+" items ("+(included.size()-videoTotal)+" photos, "+videoTotal+" videos)  ·  "+selected+" albums",13,MINT,true),26);
         cacheSummary=text("",13,DIM,false);
         addTop(body,cacheSummary,6);
         addTop(body,button("Start random shuffle  →",true,v->start()),12);
@@ -139,7 +162,8 @@ public class MainActivity extends Activity {
             LinearLayout top=horizontal();CheckBox check=new CheckBox(this);check.setButtonTintList(ColorStateList.valueOf(MINT));
             check.setChecked(a.enabled);check.setOnCheckedChangeListener((v,c)->{a.enabled=c;save();home();});
             top.addView(check);LinearLayout name=vertical();name.addView(text(a.title,17,INK,true));
-            name.addView(text(a.loading?"Loading photos…":a.photos.size()+" photos",13,DIM,false));
+            int videos=0;for(String item:a.photos)if(PhotoStorage.isVideo(item))videos++;
+            name.addView(text(a.loading?"Loading media…":(a.photos.size()-videos)+" photos · "+videos+" videos",13,DIM,false));
             TextView cacheLabel=text("",12,MINT,false);name.addView(cacheLabel);
             albumCacheLabels.put(a,cacheLabel);
             top.addView(name,new LinearLayout.LayoutParams(0,-2,1));card.addView(top);
@@ -148,13 +172,7 @@ public class MainActivity extends Activity {
             LinearLayout controls=horizontal();
             TextView refresh=button(a.loading?"Loading…":"↻  Refresh",false,v->refresh(a));
             controls.addView(refresh,new LinearLayout.LayoutParams(0,-2,1));
-            TextView remove=button("Remove",false,v->new AlertDialog.Builder(this)
-                .setTitle("Remove album?").setMessage("No photos will be deleted from Google Photos.")
-                .setNegativeButton("Cancel",null).setPositiveButton("Remove",(d,w)->{
-                    albums.remove(a);save();PhotoCacheWorker.schedule(this);
-                    LinkedHashSet<String> keep=allPhotos();
-                    worker.execute(()->PhotoStorage.prune(getApplicationContext(),keep));home();
-                }).show());
+            TextView remove=button("Remove",false,v->removeAlbum(a));
             LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(0,-2,1);rp.leftMargin=dp(8);controls.addView(remove,rp);
             addTop(card,controls,12);addTop(body,card,12);
         }
@@ -162,16 +180,76 @@ public class MainActivity extends Activity {
         addTop(body,text("Photos download privately into this app's storage in the background. Once cached, browsing works offline. Album refreshes need internet.",12,DIM,false),18);
         setContentView(sv);updateCacheStatus();handler.postDelayed(cacheTicker,1750);
     }
+    Dialog sheet(String title,String description, LinearLayout body){
+        Dialog dialog=new Dialog(this);
+        LinearLayout panel=vertical();
+        panel.setPadding(dp(22),dp(24),dp(22),dp(18));
+        GradientDrawable bg=shape(0xff14281f);bg.setCornerRadius(dp(24));panel.setBackground(bg);
+        TextView heading=text(title,22,INK,true);panel.addView(heading);
+        if(description!=null)addTop(panel,text(description,14,DIM,false),10);
+        if(body!=null)addTop(panel,body,18);
+        dialog.setContentView(panel);
+        Window w=dialog.getWindow();
+        if(w!=null){
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams params=w.getAttributes();
+            params.width=getResources().getDisplayMetrics().widthPixels-dp(38);
+            params.height=WindowManager.LayoutParams.WRAP_CONTENT;
+            params.gravity=Gravity.CENTER;
+            params.dimAmount=0.66f;
+            w.setAttributes(params);
+            w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        }
+        return dialog;
+    }
     void addAlbum(){
-        EditText e=new EditText(this);e.setHint("https://photos.app.goo.gl/…");e.setSingleLine(false);e.setMinLines(2);
-        LinearLayout holder=vertical();holder.setPadding(dp(19),0,dp(19),0);holder.addView(e);
-        new AlertDialog.Builder(this).setTitle("Add a shared album").setView(holder)
-            .setNegativeButton("Cancel",null).setPositiveButton("Add",(d,w)->{
-                String url=e.getText().toString().trim();
-                if(!SharedAlbumReader.allowed(url)){toast("Paste a Google Photos shared album link");return;}
-                for(Album a:albums)if(a.url.equals(url)){toast("Already added");return;}
-                Album a=new Album("Shared album "+(albums.size()+1),url);albums.add(a);save();home();refresh(a);
-            }).show();
+        LinearLayout content=vertical();
+        EditText edit=new EditText(this);
+        edit.setHint("Paste a Google Photos shared link");
+        edit.setHintTextColor(0xff91a99b);
+        edit.setTextColor(INK);edit.setTextSize(15);
+        edit.setSingleLine(false);edit.setMinLines(2);edit.setMaxLines(3);
+        edit.setPadding(dp(12),dp(14),dp(12),dp(14));
+        edit.setBackground(shape(0xff254236));
+        content.addView(edit);
+        LinearLayout actions=horizontal();
+        TextView cancel=button("Cancel",false,v->{});
+        TextView add=button("Add album",true,v->{});
+        actions.addView(cancel,new LinearLayout.LayoutParams(0,-2,1));
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);lp.leftMargin=dp(10);
+        actions.addView(add,lp);
+        addTop(content,actions,18);
+        Dialog dialog=sheet("Add a shared album","Paste a share link. Shuffleframe will import the media and cache previews in the background.",content);
+        cancel.setOnClickListener(v->dialog.dismiss());
+        add.setOnClickListener(v->{
+            String url=edit.getText().toString().trim();
+            if(!SharedAlbumReader.allowed(url)){edit.setError("Enter a valid Google Photos album link");return;}
+            for(Album a:albums)if(a.url.equals(url)){edit.setError("Album already added");return;}
+            Album a=new Album("Shared album "+(albums.size()+1),url);
+            albums.add(a);save();dialog.dismiss();home();refresh(a);
+        });
+        dialog.show();
+        Window w=dialog.getWindow();
+        if(w!=null)w.setLayout(getResources().getDisplayMetrics().widthPixels-dp(38),WindowManager.LayoutParams.WRAP_CONTENT);
+    }
+    void removeAlbum(Album album){
+        LinearLayout actions=horizontal();
+        TextView cancel=button("Keep",false,v->{});
+        TextView remove=button("Remove",true,v->{});
+        actions.addView(cancel,new LinearLayout.LayoutParams(0,-2,1));
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);lp.leftMargin=dp(10);actions.addView(remove,lp);
+        Dialog dialog=sheet("Remove "+album.title+"?","Only the link and saved previews are removed. Nothing changes in Google Photos.",actions);
+        cancel.setOnClickListener(v->dialog.dismiss());
+        remove.setOnClickListener(v->{
+            dialog.dismiss();albums.remove(album);save();
+            PhotoCacheWorker.schedule(this);
+            LinkedHashSet<String> keep=allPhotos();
+            worker.execute(()->PhotoStorage.prune(getApplicationContext(),keep));home();
+        });
+        dialog.show();
+        Window w=dialog.getWindow();
+        if(w!=null)w.setLayout(getResources().getDisplayMetrics().widthPixels-dp(38),WindowManager.LayoutParams.WRAP_CONTENT);
     }
     void refresh(Album a){
         if(a.loading)return; a.loading=true;home();
