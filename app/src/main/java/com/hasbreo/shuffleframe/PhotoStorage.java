@@ -36,6 +36,15 @@ final class PhotoStorage {
         if(files!=null)for(File f:files)if(f.isFile()&&f.getName().endsWith(".img"))total+=f.length();
         return total;
     }
+    static boolean isVideo(String media){return media!=null&&media.startsWith("v:");}
+    static String posterUrl(String media){
+        if(isVideo(media))return media.substring(2)+"=w1600-h1600-no";
+        return media;
+    }
+    static String streamUrl(String media){
+        if(!isVideo(media))throw new IllegalArgumentException("Not a video");
+        return media.substring(2)+"=dv";
+    }
     static String validateImageUrl(String url) throws IOException {
         try {
             URI u=new URI(url);
@@ -47,7 +56,7 @@ final class PhotoStorage {
         }catch(URISyntaxException e){throw new IOException("Bad photo address",e);}
     }
     static File ensure(Context c,String url) throws IOException {
-        validateImageUrl(url);
+        validateImageUrl(posterUrl(url));
         File f=file(c,url);
         if(f.isFile()&&f.length()>0)return f;
         Object lock=LOCKS[(key(url).hashCode()&0x7fffffff)%LOCKS.length];
@@ -57,7 +66,7 @@ final class PhotoStorage {
                 throw new IOException("Storage is nearly full");
             File temp=File.createTempFile("download-", ".part",directory(c));
             try{
-                String current=url;
+                String current=posterUrl(url);
                 boolean downloaded=false;
                 for(int redirect=0;redirect<5;redirect++){
                     validateImageUrl(current);
