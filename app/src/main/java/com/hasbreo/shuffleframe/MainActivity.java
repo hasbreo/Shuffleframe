@@ -121,7 +121,7 @@ public class MainActivity extends Activity {
         PhotoCacheWorker.schedule(this);
         home();
     }
-    @Override protected void onPause(){super.onPause();handler.removeCallbacks(nextTimer);}
+    @Override protected void onPause(){super.onPause();handler.removeCallbacks(nextTimer);if(videoView!=null&&videoPrepared&&videoView.isPlaying())videoView.pause();}
     @Override protected void onResume(){super.onResume();if(viewer&&playing)schedule();else if(!viewer){handler.removeCallbacks(cacheTicker);handler.post(cacheTicker);}}
     @Override protected void onDestroy(){handler.removeCallbacks(nextTimer);handler.removeCallbacks(cacheTicker);worker.shutdownNow();super.onDestroy();}
     @Override public void onBackPressed(){if(viewer)leave();else super.onBackPressed();}
@@ -314,26 +314,29 @@ public class MainActivity extends Activity {
         root.addView(imageLayer,new FrameLayout.LayoutParams(-1,-1));
         photoImage=makeImage();
         imageLayer.addView(photoImage,new FrameLayout.LayoutParams(-1,-1));
+        videoView=new VideoView(this);
+        videoView.setVisibility(View.GONE);
+        root.addView(videoView,new FrameLayout.LayoutParams(-1,-1));
 
         spinner=new ProgressBar(this);spinner.setIndeterminateTintList(ColorStateList.valueOf(MINT));
         root.addView(spinner,new FrameLayout.LayoutParams(dp(34),dp(34),Gravity.CENTER));
 
         // Gesture layer covers the complete picture; the actual controls sit above it.
         View gestures=new View(this);gestures.setClickable(true);
-        final float[] down={0,0};final long[] downAt={0};
+        final float[] down={0,0};
         gestures.setOnTouchListener((v,event)->{
             if(event.getActionMasked()==MotionEvent.ACTION_DOWN){
-                down[0]=event.getX();down[1]=event.getY();downAt[0]=System.currentTimeMillis();return true;
+                down[0]=event.getX();down[1]=event.getY();return true;
             }
             if(event.getActionMasked()==MotionEvent.ACTION_UP){
                 float dx=event.getX()-down[0],dy=event.getY()-down[1];
                 if(Math.abs(dx)>dp(50) && Math.abs(dx)>Math.abs(dy)*1.1f){
-                    // Both horizontal swipe directions advance through the random sequence.
-                    next(dx<0?1:-1);
+                    // The sequence is fixed: swipe right goes back to the same prior item.
+                    if(dx<0)next();else previous();
                 }else if(Math.abs(dx)<dp(24)&&Math.abs(dy)<dp(24)){
                     float fraction=event.getX()/Math.max(1,v.getWidth());
-                    if(fraction<=0.25f)next(-1);
-                    else if(fraction>=0.75f)next(1);
+                    if(fraction<0.25f)previous();
+                    else if(fraction>=0.75f)next();
                     else setOverlayVisible(!overlaysVisible);
                 }
                 return true;
@@ -368,13 +371,39 @@ public class MainActivity extends Activity {
         bottomOverlay.setPadding(dp(18),dp(42),dp(18),dp(24));
         bottomOverlay.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
             new int[]{0xe8091711,0xb3081c13,0x00000000}));
-        TextView tip=text("SWIPE TO EXPLORE   ·   TAP EDGES TO ADVANCE",10,0xffb2c5b9,true);
+        TextView tip=text("LEFT: PREVIOUS       CENTRE: HIDE       RIGHT: NEXT",10,0xffb2c5b9,true);
         tip.setGravity(Gravity.CENTER);bottomOverlay.addView(tip);
+        videoStrip=vertical();
+        videoStrip.setVisibility(View.GONE);
+        LinearLayout videoRow=horizontal();
+        videoButton=button("▶  Play video",true,v->toggleVideo());
+        videoRow.addView(videoButton);
+        videoTime=text("0:00 / 0:00",13,INK,false);
+        videoTime.setGravity(Gravity.END);
+        videoRow.addView(videoTime,new LinearLayout.LayoutParams(0,-2,1));
+        videoStrip.addView(videoRow);
+        videoSeek=new SeekBar(this);
+        videoSeek.setProgressTintList(ColorStateList.valueOf(MINT));
+        videoSeek.setThumbTintList(ColorStateList.valueOf(MINT));
+        videoSeek.setProgressBackgroundTintList(ColorStateList.valueOf(0x668ca99a));
+        videoSeek.setMax(1);
+        videoSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            @Override public void onStartTrackingTouch(SeekBar b){videoScrubbing=true;}
+            @Override public void onStopTrackingTouch(SeekBar b){
+                if(videoPrepared)videoView.seekTo(b.getProgress());
+                videoScrubbing=false;
+            }
+            @Override public void onProgressChanged(SeekBar b,int p,boolean user){
+                if(user&&videoPrepared)videoTime.setText(formatTime(p)+" / "+formatTime(videoView.getDuration()));
+            }
+        });
+        addTop(videoStrip,videoSeek,4);
+        addTop(bottomOverlay,videoStrip,12);
         LinearLayout controls=horizontal();
         LinearLayout.LayoutParams controlsLp=new LinearLayout.LayoutParams(-1,dp(54));controlsLp.topMargin=dp(12);
         bottomOverlay.addView(controls,controlsLp);
-        addControl(controls,"‹  Back",1,v->previous());
-        addControl(controls,"⤨  Reshuffle",2,v->reshuffle());
+        addControl(controls,"‹  Previous",2,v->previous());
+        addControl(controls,"⤨  Shuffle",2,v->reshuffle());
         playText=addControl(controls,"▶  Auto",2,v->togglePlay());
         root.addView(bottomOverlay,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
         setContentView(root);
@@ -415,30 +444,89 @@ public class MainActivity extends Activity {
             Collections.swap(another,0,1);
         history.addAll(another);
     }
-    void next(){next(1);}
-    void next(int direction){
+    void next(){
         if(!viewer)return;
         if(position==history.size()-1)appendPass();
-        position++;loadPhoto(direction);
+        position++;loadPhoto(1);
     }
     void previous(){
         if(!viewer)return;
         if(position>0){position--;loadPhoto(-1);}
-        else toast("This is the first photo in your shuffle");
+        else toast("This is the first item in your shuffle");
     }
     void reshuffle(){
         if(!viewer)return;
+        // New stable sequence only when explicitly tapping Shuffle.
         history=new ArrayList<>(order);Collections.shuffle(history);
         position=0;loadPhoto(1);
     }
     void togglePlay(){
         playing=!playing;
-        playText.setText(playing?"❚❚  Pause":"▶  Auto");
+        playText.setText(playing?"❚❚  Pause auto":"▶  Auto");
         schedule();
     }
     void schedule(){
         handler.removeCallbacks(nextTimer);
-        if(viewer&&playing&&hasWindowFocus())handler.postDelayed(nextTimer,seconds*1000L);
+        if(!viewer||!playing||!hasWindowFocus())return;
+        if(history.isEmpty()||PhotoStorage.isVideo(history.get(position)))return;
+        handler.postDelayed(nextTimer,seconds*1000L);
+    }
+    String formatTime(int millis){
+        int total=Math.max(0,millis)/1000;
+        return String.format(java.util.Locale.US,"%d:%02d",total/60,total%60);
+    }
+    void stopVideo(){
+        handler.removeCallbacks(videoTicker);
+        videoPrepared=false;videoLoading=false;videoScrubbing=false;
+        if(videoView!=null){
+            videoView.setVisibility(View.GONE);
+            videoView.stopPlayback();
+        }
+        if(videoStrip!=null)videoStrip.setVisibility(View.GONE);
+        if(videoButton!=null)videoButton.setText("▶  Play video");
+        if(videoSeek!=null)videoSeek.setProgress(0);
+        if(videoTime!=null)videoTime.setText("0:00 / 0:00");
+    }
+    void toggleVideo(){
+        if(!viewer||history.isEmpty())return;
+        String item=history.get(position);
+        if(!PhotoStorage.isVideo(item))return;
+        if(videoLoading)return;
+        if(videoPrepared){
+            if(videoView.isPlaying()){
+                videoView.pause();videoButton.setText("▶  Resume");
+            }else{
+                videoView.start();videoButton.setText("❚❚  Pause");
+            }
+            return;
+        }
+        videoLoading=true;videoButton.setText("Loading video…");
+        try{
+            videoView.setOnPreparedListener(mp->{
+                if(!viewer||history.isEmpty()||!history.get(position).equals(item))return;
+                videoLoading=false;videoPrepared=true;
+                videoSeek.setMax(Math.max(1,mp.getDuration()));
+                videoView.setVisibility(View.VISIBLE);
+                videoView.start();videoButton.setText("❚❚  Pause");
+                handler.removeCallbacks(videoTicker);handler.post(videoTicker);
+            });
+            videoView.setOnCompletionListener(mp->{
+                videoButton.setText("↻  Replay");
+                if(playing)next();
+                else{videoView.seekTo(0);videoView.pause();}
+            });
+            videoView.setOnErrorListener((mp,what,extra)->{
+                videoLoading=false;videoPrepared=false;
+                videoButton.setText("▶  Retry video");
+                videoView.setVisibility(View.GONE);
+                toast("This Google Photos video couldn't be played. Try refreshing its album.");
+                return true;
+            });
+            videoView.setVideoURI(Uri.parse(PhotoStorage.streamUrl(item)));
+            videoView.requestFocus();
+        }catch(Exception e){
+            videoLoading=false;videoButton.setText("▶  Retry video");toast("Video unavailable: "+e.getMessage());
+        }
     }
     void showBitmap(Bitmap bitmap,int direction){
         // The old image remains visible until the next image has actually decoded.
@@ -460,11 +548,16 @@ public class MainActivity extends Activity {
     }
     void loadPhoto(int direction){
         if(!viewer||order.isEmpty())return;
+        stopVideo();handler.removeCallbacks(nextTimer);
         int generation=++photoGeneration;
         countText.setText((position%order.size()+1)+" / "+order.size());
         slideshowProgress.setProgress(position%order.size()+1);
         spinner.setVisibility(View.VISIBLE);
         String url=history.get(position);
+        if(PhotoStorage.isVideo(url)){
+            videoStrip.setVisibility(View.VISIBLE);
+            videoButton.setText("▶  Play video");
+        }
         Bitmap ram=memory.get(url);
         if(ram!=null){
             spinner.setVisibility(View.GONE);
@@ -491,7 +584,7 @@ public class MainActivity extends Activity {
         });
     }
     void leave(){
-        handler.removeCallbacks(nextTimer);handler.removeCallbacks(cacheTicker);viewer=false;playing=false;photoGeneration++;
+        stopVideo();handler.removeCallbacks(nextTimer);handler.removeCallbacks(cacheTicker);viewer=false;playing=false;photoGeneration++;
         getWindow().getDecorView().setSystemUiVisibility(0);home();
     }
     void load(){
