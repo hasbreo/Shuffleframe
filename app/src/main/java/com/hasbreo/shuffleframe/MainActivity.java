@@ -118,6 +118,7 @@ public class MainActivity extends Activity {
         if(!preferences.contains("albums"))
             preferences.edit().putString("albums",getPreferences(0).getString("albums","[]")).apply();
         load();
+        seconds=Math.max(2,Math.min(60,PhotoCacheWorker.prefs(this).getInt("slide_seconds",5)));
         PhotoCacheWorker.schedule(this);
         home();
     }
@@ -155,6 +156,30 @@ public class MainActivity extends Activity {
         addTop(body,cacheSummary,6);
         addTop(body,button("Start random shuffle  →",true,v->start()),12);
         addTop(body,button("+  Add shared Google Photos album",false,v->addAlbum()),10);
+        LinearLayout intervalCard=vertical();
+        intervalCard.setPadding(dp(16),dp(16),dp(16),dp(15));
+        intervalCard.setBackground(shape(PANEL));
+        LinearLayout intervalHead=horizontal();
+        intervalHead.addView(text("Auto slideshow interval",15,INK,true),
+            new LinearLayout.LayoutParams(0,-2,1));
+        TextView intervalValue=text(seconds+" seconds",14,MINT,true);
+        intervalHead.addView(intervalValue);intervalCard.addView(intervalHead);
+        SeekBar interval=new SeekBar(this);
+        interval.setMax(58);interval.setProgress(seconds-2);
+        interval.setProgressTintList(ColorStateList.valueOf(MINT));
+        interval.setProgressBackgroundTintList(ColorStateList.valueOf(0xff436152));
+        interval.setThumbTintList(ColorStateList.valueOf(MINT));
+        interval.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            @Override public void onProgressChanged(SeekBar bar,int value,boolean fromUser){
+                seconds=value+2;intervalValue.setText(seconds+" seconds");
+                if(fromUser)PhotoCacheWorker.prefs(MainActivity.this).edit()
+                    .putInt("slide_seconds",seconds).apply();
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar){}
+            @Override public void onStopTrackingTouch(SeekBar bar){}
+        });
+        addTop(intervalCard,interval,10);
+        addTop(body,intervalCard,14);
         addTop(body,text("Albums",22,INK,true),30);
         if(albums.isEmpty()) addTop(body,text("Paste a Google Photos shared-album link to begin.",15,DIM,false),12);
         for(Album a:new ArrayList<>(albums)){
@@ -177,7 +202,7 @@ public class MainActivity extends Activity {
             addTop(card,controls,12);addTop(body,card,12);
         }
         addTop(body,button("↻  Refresh all albums",false,v->{for(Album a:new ArrayList<>(albums))refresh(a);}),20);
-        addTop(body,text("Photos download privately into this app's storage in the background. Once cached, browsing works offline. Album refreshes need internet.",12,DIM,false),18);
+        addTop(body,text("Photos and videos are saved to private app storage. Full videos can use significant space. Downloads resume when possible; album refresh requires internet.",12,DIM,false),18);
         setContentView(sv);updateCacheStatus();handler.postDelayed(cacheTicker,1750);
     }
     Dialog sheet(String title,String description, LinearLayout body){
@@ -220,7 +245,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);lp.leftMargin=dp(10);
         actions.addView(add,lp);
         addTop(content,actions,18);
-        Dialog dialog=sheet("Add a shared album","Paste a share link. Shuffleframe will import the media and cache previews in the background.",content);
+        Dialog dialog=sheet("Add a shared album","Paste a share link. Shuffleframe downloads photos and full videos into private storage.",content);
         cancel.setOnClickListener(v->dialog.dismiss());
         add.setOnClickListener(v->{
             String url=edit.getText().toString().trim();
@@ -239,7 +264,7 @@ public class MainActivity extends Activity {
         TextView remove=button("Remove",true,v->{});
         actions.addView(cancel,new LinearLayout.LayoutParams(0,-2,1));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);lp.leftMargin=dp(10);actions.addView(remove,lp);
-        Dialog dialog=sheet("Remove "+album.title+"?","Only the link and saved previews are removed. Nothing changes in Google Photos.",actions);
+        Dialog dialog=sheet("Remove "+album.title+"?","The album and its downloaded media are removed from this app. Google Photos originals remain unchanged.",actions);
         cancel.setOnClickListener(v->dialog.dismiss());
         remove.setOnClickListener(v->{
             dialog.dismiss();albums.remove(album);save();
@@ -283,7 +308,7 @@ public class MainActivity extends Activity {
         int cached=PhotoStorage.count(this,all);
         if(cacheSummary!=null){
             long mb=PhotoStorage.bytes(this)/(1024*1024);
-            cacheSummary.setText("Saved on phone: "+cached+" / "+all.size()+" photos · "+mb+" MB"+
+            cacheSummary.setText("Saved offline: "+cached+" / "+all.size()+" items · "+mb+" MB"+
                 (cached<all.size()?"  ·  Downloading in background":"  ·  Ready offline"));
         }
         for(Map.Entry<Album,TextView> entry:albumCacheLabels.entrySet()){
@@ -371,8 +396,6 @@ public class MainActivity extends Activity {
         bottomOverlay.setPadding(dp(18),dp(42),dp(18),dp(24));
         bottomOverlay.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
             new int[]{0xe8091711,0xb3081c13,0x00000000}));
-        TextView tip=text("LEFT: PREVIOUS       CENTRE: HIDE       RIGHT: NEXT",10,0xffb2c5b9,true);
-        tip.setGravity(Gravity.CENTER);bottomOverlay.addView(tip);
         videoStrip=vertical();
         videoStrip.setVisibility(View.GONE);
         LinearLayout videoRow=horizontal();
@@ -438,21 +461,16 @@ public class MainActivity extends Activity {
             }
         }
     }
-    void appendPass(){
-        ArrayList<String> another=new ArrayList<>(order);Collections.shuffle(another);
-        if(another.size()>1&&another.get(0).equals(history.get(history.size()-1)))
-            Collections.swap(another,0,1);
-        history.addAll(another);
-    }
     void next(){
-        if(!viewer)return;
-        if(position==history.size()-1)appendPass();
-        position++;loadPhoto(1);
+        if(!viewer||history.isEmpty())return;
+        // A slideshow is a fixed, fully shuffled cycle until Shuffle is pressed.
+        position=(position+1)%history.size();
+        loadPhoto(1);
     }
     void previous(){
-        if(!viewer)return;
-        if(position>0){position--;loadPhoto(-1);}
-        else toast("This is the first item in your shuffle");
+        if(!viewer||history.isEmpty())return;
+        position=(position-1+history.size())%history.size();
+        loadPhoto(-1);
     }
     void reshuffle(){
         if(!viewer)return;
@@ -524,7 +542,10 @@ public class MainActivity extends Activity {
             });
             // VideoView needs a visible SurfaceHolder before onPrepared can fire.
             videoView.setVisibility(View.VISIBLE);
-            videoView.setVideoURI(Uri.parse(PhotoStorage.streamUrl(item)));
+            // Prefer an already downloaded complete video; otherwise stream while it caches.
+            java.io.File localVideo=PhotoStorage.videoFile(this,item);
+            if(PhotoStorage.cached(this,item))videoView.setVideoPath(localVideo.getAbsolutePath());
+            else videoView.setVideoURI(Uri.parse(PhotoStorage.streamUrl(item)));
             videoView.requestFocus();
         }catch(Exception e){
             videoLoading=false;videoButton.setText("▶  Retry video");toast("Video unavailable: "+e.getMessage());
@@ -559,12 +580,13 @@ public class MainActivity extends Activity {
         if(PhotoStorage.isVideo(url)){
             videoStrip.setVisibility(View.VISIBLE);
             videoButton.setText("▶  Play video");
+            // Always autoplay video on arrival, including manual swipes.
+            toggleVideo();
         }
         Bitmap ram=memory.get(url);
         if(ram!=null){
             spinner.setVisibility(View.GONE);
             showBitmap(ram,direction);
-            if(PhotoStorage.isVideo(url)&&playing)toggleVideo();
             schedule();return;
         }
         int width=getResources().getDisplayMetrics().widthPixels;
@@ -580,7 +602,6 @@ public class MainActivity extends Activity {
                 if(ready!=null){
                     memory.put(url,ready);
                     showBitmap(ready,direction);
-                    if(PhotoStorage.isVideo(url)&&playing)toggleVideo();
                 }else{
                     toast("Photo not available"+(failure==null?"":": "+failure));
                 }
