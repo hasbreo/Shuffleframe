@@ -10,6 +10,11 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.content.SharedPreferences;
+import android.util.LruCache;
+import android.widget.ProgressBar;
+import java.util.HashMap;
+import java.util.Map;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -55,6 +60,17 @@ public class MainActivity extends Activity {
     private ProgressBar spinner;
     private TextView countText, playText;
     private int seconds=5;
+    private FrameLayout imageLayer;
+    private LinearLayout topOverlay,bottomOverlay;
+    private TextView cacheSummary;
+    private final Map<Album,TextView> albumCacheLabels=new HashMap<>();
+    private boolean overlaysVisible=true;
+    private final LruCache<String,Bitmap> memory=new LruCache<String,Bitmap>(32*1024) {
+        @Override protected int sizeOf(String key,Bitmap value){return Math.max(1,value.getByteCount()/1024);}
+    };
+    private final Runnable cacheTicker=new Runnable() {
+        @Override public void run(){if(!viewer){updateCacheStatus();handler.postDelayed(this,1750);}}
+    };
     private final Runnable nextTimer=new Runnable() { @Override public void run(){if(viewer && playing){next(); schedule();}} };
 
     static final class Album {
@@ -75,13 +91,17 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle b){
         super.onCreate(b); getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        // Upgrade in place from v0.2: preserve albums already added by the user.
+        SharedPreferences preferences=PhotoCacheWorker.prefs(this);
+        if(!preferences.contains("albums"))
+            preferences.edit().putString("albums",PhotoCacheWorker.prefs(this).getString("albums","[]")).apply();
         load();
-
+        PhotoCacheWorker.schedule(this);
         home();
     }
     @Override protected void onPause(){super.onPause();handler.removeCallbacks(nextTimer);}
-    @Override protected void onResume(){super.onResume();if(viewer&&playing)schedule();}
-    @Override protected void onDestroy(){handler.removeCallbacks(nextTimer);worker.shutdownNow();super.onDestroy();}
+    @Override protected void onResume(){super.onResume();if(viewer&&playing)schedule();else if(!viewer){handler.removeCallbacks(cacheTicker);handler.post(cacheTicker);}}
+    @Override protected void onDestroy(){handler.removeCallbacks(nextTimer);handler.removeCallbacks(cacheTicker);worker.shutdownNow();super.onDestroy();}
     @Override public void onBackPressed(){if(viewer)leave();else super.onBackPressed();}
     int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
     LinearLayout vertical(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
@@ -99,6 +119,7 @@ public class MainActivity extends Activity {
     void toast(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
     void home(){
         if(viewer)return;
+        albumCacheLabels.clear();handler.removeCallbacks(cacheTicker);
         ScrollView sv=new ScrollView(this);sv.setFillViewport(true);sv.setBackgroundColor(BG);
         LinearLayout body=vertical();body.setPadding(dp(20),dp(30),dp(20),dp(32));sv.addView(body);
         body.addView(text("◈  SHUFFLEFRAME",14,MINT,true));
@@ -107,6 +128,8 @@ public class MainActivity extends Activity {
         LinkedHashSet<String> included=photos();
         int selected=0;for(Album a:albums)if(a.enabled)selected++;
         addTop(body,text(included.size()+" photos  ·  "+selected+" selected albums",13,MINT,true),26);
+        cacheSummary=text("",13,DIM,false);
+        addTop(body,cacheSummary,6);
         addTop(body,button("Start random shuffle  →",true,v->start()),12);
         addTop(body,button("+  Add shared Google Photos album",false,v->addAlbum()),10);
         addTop(body,text("Albums",22,INK,true),30);
@@ -117,6 +140,8 @@ public class MainActivity extends Activity {
             check.setChecked(a.enabled);check.setOnCheckedChangeListener((v,c)->{a.enabled=c;save();home();});
             top.addView(check);LinearLayout name=vertical();name.addView(text(a.title,17,INK,true));
             name.addView(text(a.loading?"Loading photos…":a.photos.size()+" photos",13,DIM,false));
+            TextView cacheLabel=text("",12,MINT,false);name.addView(cacheLabel);
+            albumCacheLabels.put(a,cacheLabel);
             top.addView(name,new LinearLayout.LayoutParams(0,-2,1));card.addView(top);
             TextView url=text(a.url,11,DIM,false);url.setMaxLines(1);url.setEllipsize(android.text.TextUtils.TruncateAt.END);
             addTop(card,url,6);
@@ -125,13 +150,17 @@ public class MainActivity extends Activity {
             controls.addView(refresh,new LinearLayout.LayoutParams(0,-2,1));
             TextView remove=button("Remove",false,v->new AlertDialog.Builder(this)
                 .setTitle("Remove album?").setMessage("No photos will be deleted from Google Photos.")
-                .setNegativeButton("Cancel",null).setPositiveButton("Remove",(d,w)->{albums.remove(a);save();home();}).show());
+                .setNegativeButton("Cancel",null).setPositiveButton("Remove",(d,w)->{
+                    albums.remove(a);save();PhotoCacheWorker.schedule(this);
+                    LinkedHashSet<String> keep=allPhotos();
+                    worker.execute(()->PhotoStorage.prune(getApplicationContext(),keep));home();
+                }).show());
             LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(0,-2,1);rp.leftMargin=dp(8);controls.addView(remove,rp);
             addTop(card,controls,12);addTop(body,card,12);
         }
         addTop(body,button("↻  Refresh all albums",false,v->{for(Album a:new ArrayList<>(albums))refresh(a);}),20);
-        addTop(body,text("Photos load from shared album links on your phone. An internet connection is required. Google can change its shared-album pages, so link imports are best-effort.",12,DIM,false),18);
-        setContentView(sv);
+        addTop(body,text("Photos download privately into this app's storage in the background. Once cached, browsing works offline. Album refreshes need internet.",12,DIM,false),18);
+        setContentView(sv);updateCacheStatus();handler.postDelayed(cacheTicker,1750);
     }
     void addAlbum(){
         EditText e=new EditText(this);e.setHint("https://photos.app.goo.gl/…");e.setSingleLine(false);e.setMinLines(2);
@@ -157,13 +186,32 @@ public class MainActivity extends Activity {
                     if(a.title.startsWith("Shared album")||a.title.equals("My first album")){
                         if(result.title!=null&&!result.title.isEmpty())a.title=result.title;
                     }
-                    save();home();
+                    save();PhotoCacheWorker.schedule(this);home();
                     if(result.partial)toast("Loaded "+a.photos.size()+" photos, but there may be more pages to load.");
                 });
             } catch(Exception e){
                 runOnUiThread(()->{a.loading=false;home();toast("Album refresh failed: "+e.getMessage());});
             }
         });
+    }
+    LinkedHashSet<String> allPhotos(){
+        LinkedHashSet<String> result=new LinkedHashSet<>();
+        for(Album a:albums)result.addAll(a.photos);
+        return result;
+    }
+    void updateCacheStatus(){
+        if(viewer)return;
+        LinkedHashSet<String> all=allPhotos();
+        int cached=PhotoStorage.count(this,all);
+        if(cacheSummary!=null){
+            long mb=PhotoStorage.bytes(this)/(1024*1024);
+            cacheSummary.setText("Saved on phone: "+cached+" / "+all.size()+" photos · "+mb+" MB"+
+                (cached<all.size()?"  ·  Downloading in background":"  ·  Ready offline"));
+        }
+        for(Map.Entry<Album,TextView> entry:albumCacheLabels.entrySet()){
+            Album a=entry.getKey();int count=PhotoStorage.count(this,new LinkedHashSet<>(a.photos));
+            entry.getValue().setText(count+" / "+a.photos.size()+" cached offline");
+        }
     }
     LinkedHashSet<String> photos(){
         LinkedHashSet<String> result=new LinkedHashSet<>();
@@ -175,39 +223,113 @@ public class MainActivity extends Activity {
         order=new ArrayList<>(all);Collections.shuffle(order);history=new ArrayList<>(order);
         position=0;viewer=true;playing=false;showViewer();
     }
+
     void showViewer(){
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN|
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        handler.removeCallbacks(cacheTicker);
+        overlaysVisible=true;
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY|View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         FrameLayout root=new FrameLayout(this);root.setBackgroundColor(Color.BLACK);
-        photoImage=new ImageView(this);photoImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        root.addView(photoImage,new FrameLayout.LayoutParams(-1,-1));
-        float[] startX={0},startY={0};
-        photoImage.setOnTouchListener((v,e)->{
-            if(e.getActionMasked()==MotionEvent.ACTION_DOWN){startX[0]=e.getX();startY[0]=e.getY();return true;}
-            if(e.getActionMasked()==MotionEvent.ACTION_UP){
-                float dx=e.getX()-startX[0];
-                if(Math.abs(dx)>dp(55)&&Math.abs(dx)>Math.abs(e.getY()-startY[0])){if(dx<0)next();else previous();}
-                return true;
-            }return true;
-        });
+        imageLayer=new FrameLayout(this);
+        root.addView(imageLayer,new FrameLayout.LayoutParams(-1,-1));
+        photoImage=makeImage();
+        imageLayer.addView(photoImage,new FrameLayout.LayoutParams(-1,-1));
+
         spinner=new ProgressBar(this);spinner.setIndeterminateTintList(ColorStateList.valueOf(MINT));
-        root.addView(spinner,new FrameLayout.LayoutParams(dp(40),dp(40),Gravity.CENTER));
-        LinearLayout bar=horizontal();bar.setPadding(dp(13),dp(18),dp(13),dp(18));bar.setBackgroundColor(0xbb091710);
-        TextView back=text("‹  Albums",15,INK,true);back.setPadding(dp(6),dp(7),dp(14),dp(7));back.setOnClickListener(v->leave());
-        bar.addView(back);countText=text("",14,MINT,true);countText.setGravity(Gravity.RIGHT);
-        bar.addView(countText,new LinearLayout.LayoutParams(0,-2,1));
-        root.addView(bar,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
-        LinearLayout controls=horizontal();controls.setPadding(dp(9),dp(16),dp(9),dp(25));
-        controls.setBackgroundColor(0xbb091710);
-        addControl(controls,"‹",1,v->previous());addControl(controls,"›",1,v->next());
-        addControl(controls,"Shuffle",2,v->reshuffle());
+        root.addView(spinner,new FrameLayout.LayoutParams(dp(34),dp(34),Gravity.CENTER));
+
+        // Gesture layer covers the complete picture; the actual controls sit above it.
+        View gestures=new View(this);gestures.setClickable(true);
+        final float[] down={0,0};final long[] downAt={0};
+        gestures.setOnTouchListener((v,event)->{
+            if(event.getActionMasked()==MotionEvent.ACTION_DOWN){
+                down[0]=event.getX();down[1]=event.getY();downAt[0]=System.currentTimeMillis();return true;
+            }
+            if(event.getActionMasked()==MotionEvent.ACTION_UP){
+                float dx=event.getX()-down[0],dy=event.getY()-down[1];
+                if(Math.abs(dx)>dp(50) && Math.abs(dx)>Math.abs(dy)*1.1f){
+                    // Both horizontal swipe directions advance through the random sequence.
+                    next(dx<0?1:-1);
+                }else if(Math.abs(dx)<dp(24)&&Math.abs(dy)<dp(24)){
+                    float fraction=event.getX()/Math.max(1,v.getWidth());
+                    if(fraction<=0.25f)next(-1);
+                    else if(fraction>=0.75f)next(1);
+                    else setOverlayVisible(!overlaysVisible);
+                }
+                return true;
+            }
+            return true;
+        });
+        root.addView(gestures,new FrameLayout.LayoutParams(-1,-1));
+
+        topOverlay=vertical();
+        topOverlay.setPadding(dp(18),dp(18),dp(18),dp(22));
+        topOverlay.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[]{0xe50a1712,0xb3081c13,0x00000000}));
+        LinearLayout top=horizontal();
+        TextView back=text("‹  ALBUMS",13,INK,true);
+        back.setPadding(dp(5),dp(15),dp(15),dp(15));back.setOnClickListener(v->leave());
+        top.addView(back);
+        TextView brand=text("SHUFFLEFRAME",13,MINT,true);brand.setGravity(Gravity.CENTER);
+        top.addView(brand,new LinearLayout.LayoutParams(0,-2,1));
+        countText=text("",13,INK,true);countText.setGravity(Gravity.END);
+        countText.setPadding(dp(6),dp(12),dp(5),dp(12));top.addView(countText);
+        topOverlay.addView(top);
+        ProgressBar progress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(Math.max(1,order.size()));progress.setProgress(1);
+        progress.setProgressTintList(ColorStateList.valueOf(MINT));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(0x668ca99a));
+        LinearLayout.LayoutParams prog=new LinearLayout.LayoutParams(-1,dp(2));prog.topMargin=dp(4);
+        topOverlay.addView(progress,prog);
+        slideshowProgress=progress;
+        root.addView(topOverlay,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
+
+        bottomOverlay=vertical();
+        bottomOverlay.setPadding(dp(18),dp(42),dp(18),dp(24));
+        bottomOverlay.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
+            new int[]{0xe8091711,0xb3081c13,0x00000000}));
+        TextView tip=text("SWIPE TO EXPLORE   ·   TAP EDGES TO ADVANCE",10,0xffb2c5b9,true);
+        tip.setGravity(Gravity.CENTER);bottomOverlay.addView(tip);
+        LinearLayout controls=horizontal();
+        LinearLayout.LayoutParams controlsLp=new LinearLayout.LayoutParams(-1,dp(54));controlsLp.topMargin=dp(12);
+        bottomOverlay.addView(controls,controlsLp);
+        addControl(controls,"‹  Back",1,v->previous());
+        addControl(controls,"⤨  Reshuffle",2,v->reshuffle());
         playText=addControl(controls,"▶  Auto",2,v->togglePlay());
-        root.addView(controls,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
-        setContentView(root);loadPhoto();
+        root.addView(bottomOverlay,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
+        setContentView(root);
+        loadPhoto(1);
+    }
+    private ProgressBar slideshowProgress;
+    ImageView makeImage(){
+        ImageView image=new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        image.setBackgroundColor(Color.BLACK);
+        return image;
     }
     TextView addControl(LinearLayout parent,String label,int weight,View.OnClickListener click){
-        TextView t=text(label,15,MINT,true);t.setGravity(Gravity.CENTER);t.setOnClickListener(click);
-        parent.addView(t,new LinearLayout.LayoutParams(0,dp(45),weight));return t;
+        TextView t=text(label,14,MINT,true);t.setGravity(Gravity.CENTER);
+        t.setBackground(shape(0x9e183426));
+        t.setOnClickListener(click);
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-1,weight);
+        lp.leftMargin=dp(3);lp.rightMargin=dp(3);parent.addView(t,lp);
+        return t;
+    }
+    void setOverlayVisible(boolean visible){
+        overlaysVisible=visible;
+        for(View overlay:new View[]{topOverlay,bottomOverlay}){
+            overlay.animate().cancel();
+            if(visible){
+                overlay.setVisibility(View.VISIBLE);
+                overlay.animate().alpha(1f).setDuration(230).start();
+            }else{
+                overlay.animate().alpha(0f).setDuration(230).withEndAction(()->{
+                    if(!overlaysVisible)overlay.setVisibility(View.GONE);
+                }).start();
+            }
+        }
     }
     void appendPass(){
         ArrayList<String> another=new ArrayList<>(order);Collections.shuffle(another);
@@ -215,42 +337,83 @@ public class MainActivity extends Activity {
             Collections.swap(another,0,1);
         history.addAll(another);
     }
-    void next(){if(!viewer)return;if(position==history.size()-1)appendPass();position++;loadPhoto();}
-    void previous(){if(!viewer)return;if(position>0)position--;loadPhoto();schedule();}
-    void reshuffle(){if(!viewer)return;history=new ArrayList<>(order);Collections.shuffle(history);position=0;loadPhoto();schedule();}
-    void togglePlay(){playing=!playing;playText.setText(playing?"❚❚  Pause":"▶  Auto");schedule();}
-    void schedule(){handler.removeCallbacks(nextTimer);if(viewer&&playing&&hasWindowFocus())handler.postDelayed(nextTimer,seconds*1000L);}
-    void loadPhoto(){
-        if(!viewer)return;int gen=++photoGeneration;
+    void next(){next(1);}
+    void next(int direction){
+        if(!viewer)return;
+        if(position==history.size()-1)appendPass();
+        position++;loadPhoto(direction);
+    }
+    void previous(){
+        if(!viewer)return;
+        if(position>0){position--;loadPhoto(-1);}
+        else toast("This is the first photo in your shuffle");
+    }
+    void reshuffle(){
+        if(!viewer)return;
+        history=new ArrayList<>(order);Collections.shuffle(history);
+        position=0;loadPhoto(1);
+    }
+    void togglePlay(){
+        playing=!playing;
+        playText.setText(playing?"❚❚  Pause":"▶  Auto");
+        schedule();
+    }
+    void schedule(){
+        handler.removeCallbacks(nextTimer);
+        if(viewer&&playing&&hasWindowFocus())handler.postDelayed(nextTimer,seconds*1000L);
+    }
+    void showBitmap(Bitmap bitmap,int direction){
+        // The old image remains visible until the next image has actually decoded.
+        for(int i=imageLayer.getChildCount()-1;i>=0;i--){
+            View child=imageLayer.getChildAt(i);child.animate().cancel();
+            if(child!=photoImage)imageLayer.removeView(child);
+        }
+        ImageView old=photoImage;
+        ImageView incoming=makeImage();incoming.setImageBitmap(bitmap);
+        imageLayer.addView(incoming,new FrameLayout.LayoutParams(-1,-1));
+        float width=Math.max(dp(300),imageLayer.getWidth());
+        incoming.setTranslationX(width*direction);
+        incoming.animate().translationX(0).setDuration(280)
+            .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+        old.animate().translationX(-width*direction).setDuration(280)
+            .setInterpolator(new android.view.animation.DecelerateInterpolator())
+            .withEndAction(()->{if(old.getParent()==imageLayer)imageLayer.removeView(old);}).start();
+        photoImage=incoming;
+    }
+    void loadPhoto(int direction){
+        if(!viewer||order.isEmpty())return;
+        int generation=++photoGeneration;
         countText.setText((position%order.size()+1)+" / "+order.size());
-        photoImage.setImageDrawable(null);spinner.setVisibility(View.VISIBLE);
+        slideshowProgress.setProgress(position%order.size()+1);
+        spinner.setVisibility(View.VISIBLE);
         String url=history.get(position);
+        Bitmap ram=memory.get(url);
+        if(ram!=null){
+            spinner.setVisibility(View.GONE);
+            showBitmap(ram,direction);schedule();return;
+        }
+        int width=getResources().getDisplayMetrics().widthPixels;
+        int height=getResources().getDisplayMetrics().heightPixels;
         worker.execute(()->{
             Bitmap bitmap=null;String error=null;
-            try{
-                if(!url.startsWith("https://lh3.googleusercontent.com/") &&
-                   !url.startsWith("https://lh4.googleusercontent.com/") &&
-                   !url.startsWith("https://lh5.googleusercontent.com/") &&
-                   !url.startsWith("https://lh6.googleusercontent.com/"))
-                   throw new IllegalArgumentException("Image URL not allowed");
-                HttpURLConnection conn=(HttpURLConnection)new URL(url).openConnection();
-                conn.setConnectTimeout(15000);conn.setReadTimeout(25000);
-                conn.setInstanceFollowRedirects(true);
-                try(InputStream in=conn.getInputStream()){bitmap=BitmapFactory.decodeStream(in);}
-                finally{conn.disconnect();}
-                if(bitmap==null)error="Image decode failed";
-            }catch(Exception|OutOfMemoryError ex){error=ex.getMessage();}
-            final Bitmap result=bitmap;final String message=error;
+            try{bitmap=PhotoStorage.decode(getApplicationContext(),url,width,height);}
+            catch(Exception|OutOfMemoryError e){error=e.getMessage();}
+            Bitmap ready=bitmap;String failure=error;
             runOnUiThread(()->{
-                if(!viewer||gen!=photoGeneration)return;
+                if(!viewer||generation!=photoGeneration)return;
                 spinner.setVisibility(View.GONE);
-                if(result!=null){photoImage.setImageBitmap(result);photoImage.setAlpha(0.4f);photoImage.animate().alpha(1f).setDuration(200).start();}
-                else toast("Couldn't load this photo"+(message==null?"":": "+message));
+                if(ready!=null){
+                    memory.put(url,ready);
+                    showBitmap(ready,direction);
+                }else{
+                    toast("Photo not available"+(failure==null?"":": "+failure));
+                }
+                schedule();
             });
         });
     }
     void leave(){
-        handler.removeCallbacks(nextTimer);viewer=false;playing=false;photoGeneration++;
+        handler.removeCallbacks(nextTimer);handler.removeCallbacks(cacheTicker);viewer=false;playing=false;photoGeneration++;
         getWindow().getDecorView().setSystemUiVisibility(0);home();
     }
     void load(){
@@ -260,7 +423,7 @@ public class MainActivity extends Activity {
     }
     void save(){
         try{JSONArray arr=new JSONArray();for(Album a:albums)arr.put(a.json());
-            getPreferences(0).edit().putString("albums",arr.toString()).apply();
+            PhotoCacheWorker.prefs(this).edit().putString("albums",arr.toString()).apply();
         }catch(Exception ignored){}
     }
 }
