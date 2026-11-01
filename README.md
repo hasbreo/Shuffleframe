@@ -2,28 +2,22 @@
 
 A standalone Android app for randomised Google Photos shared-album slideshows.
 
-## Usage
-1. Open the app. **No albums are preloaded.**
-2. Tap **Add shared Google Photos album** and paste your own link.
-3. Select one or multiple albums using the checkboxes.
-4. Tap **Start random shuffle** to swipe through images or enable auto-play.
+## Install
+Download the latest testing APK from [GitHub Releases](https://github.com/hasbreo/Shuffleframe/releases).
+The app starts empty, so add your own Google Photos shared-album links.
 
-The shuffle doesn't repeat an image until its current pass is exhausted. Links stay on your phone in the app's preferences. The app never asks you to sign into Google.
+## Features
+- Combine any number of shared albums, including photos and recognised videos.
+- One randomly generated, **fixed navigation order** per slideshow. Swipe right or tap the left 25% to go to the **previous** item; swipe left or tap the right 25% for **next**. The middle 50% toggles the overlay.
+- Only the Shuffle button creates a fresh random order.
+- Offline photo/video-poster caching with up to **six parallel downloads**, round-robin across albums; watch progress and storage consumption on the home screen.
+- On video entries, use **Play / Pause** and the seek bar. Videos are streamed from Google Photos as needed (videos themselves are not pre-downloaded). In auto slideshow mode, videos are started and played before advancing to the next item.
+- Dark emerald interface with custom rounded dialogs and adaptive launcher icon.
 
-## Download APK
-Open the **Actions → Shuffleframe APK** workflow, pick a successful run, and download the **Shuffleframe-APK** artifact. Extract the `app-debug.apk` from its ZIP and install it.
+## Updating from older releases
+v0.2 used a temporary signing key. If Android won't update that older APK, save your album links first, uninstall it, then install the latest build. Subsequent test builds use the cached signing key when available, but long-term production signing remains outstanding.
 
-## Caveat
-### Offline caching
-Album images are downloaded into private app storage using Android WorkManager after an album is imported or refreshed, and the cache is reused for offline slideshows. Cache progress appears on the home screen. Downloaded images count against your phone's storage; clearing the app's storage removes them.
+## Google Photos limitations
+Google does not officially support accessing all photos from arbitrary shared-album links via a public API. The importer parses the shared album HTML; image and video detection is best effort. Albums with extra pages may be incomplete. Some videos may not play due to Google's media delivery restrictions. Refresh an existing album once after updating to v0.4 to recognise its videos.
 
-### Navigation
-Tap the left or right 25% of the photo to advance to the next shuffled picture. Tap the centre 50% to fade the viewer controls away or bring them back. Swipe in either horizontal direction to advance through the shuffled photos. Use the on-screen Back button to revisit an earlier photo.
-
-### Updating from v0.2
-v0.2 was built with a temporary debug signing key. Android may refuse to install v0.3 over it with "App not installed". In that case, save your existing album links and uninstall v0.2 before installing v0.3. The new build caches its signing key in GitHub Actions for future development builds, although a permanent private signing key is recommended for long-term releases.
-
-### Shared album compatibility
-Google Photos does not expose the shared-album contents through a stable official API. The importer uses public shared-album HTML and may stop working if Google changes its page format. Some albums may not import completely. It does not make photos private or remove Google's existing album-sharing permissions.
-
-The source is independent of Tempo.
+Your album links and cached photos remain in the app's own on-device data. Removing or clearing app data can delete them, but never affects your originals in Google Photos.
