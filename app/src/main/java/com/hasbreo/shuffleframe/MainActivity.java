@@ -94,7 +94,7 @@ public class MainActivity extends Activity {
         // Upgrade in place from v0.2: preserve albums already added by the user.
         SharedPreferences preferences=PhotoCacheWorker.prefs(this);
         if(!preferences.contains("albums"))
-            preferences.edit().putString("albums",PhotoCacheWorker.prefs(this).getString("albums","[]")).apply();
+            preferences.edit().putString("albums",getPreferences(0).getString("albums","[]")).apply();
         load();
         PhotoCacheWorker.schedule(this);
         home();
@@ -417,7 +417,7 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(0);home();
     }
     void load(){
-        try{JSONArray arr=new JSONArray(getPreferences(0).getString("albums","[]"));
+        try{JSONArray arr=new JSONArray(PhotoCacheWorker.prefs(this).getString("albums","[]"));
             for(int i=0;i<arr.length();i++)albums.add(Album.from(arr.getJSONObject(i)));
         }catch(Exception ignored){}
     }
