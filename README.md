@@ -8,10 +8,10 @@ The app starts empty, so add your own Google Photos shared-album links.
 
 ## Features
 - Combine any number of shared albums, including photos and recognised videos.
-- One randomly generated, **fixed navigation order** per slideshow. Swipe right or tap the left 25% to go to the **previous** item; swipe left or tap the right 25% for **next**. The middle 50% toggles the overlay.
-- Only the Shuffle button creates a fresh random order.
-- Offline photo/video-poster caching with up to **six parallel downloads**, round-robin across albums; watch progress and storage consumption on the home screen.
-- On video entries, use **Play / Pause** and the seek bar. Videos are streamed from Google Photos as needed (videos themselves are not pre-downloaded). In auto slideshow mode, videos are started and played before advancing to the next item.
+- One randomly generated, **fixed navigation order** per slideshow. Swipe right or tap the left 25% to go to the **previous** item; swipe left or tap the right 25% for **next**. The middle 50% toggles the overlay. The tap-zone help caption has been removed.
+- Only the Shuffle button creates a fresh random order. After reaching the end, the same sequence starts over; it does not re-randomise by itself.
+- Background caching of full photos and videos without a fixed six-download limit, interleaved across albums. Actual simultaneous connections depend on Android, network and Google rate limits; progress and storage use appear on the home screen.
+- Videos automatically play when you swipe onto them. They use the fully downloaded offline copy when available, or stream while a background download is underway. Playback has a play/pause button and seek bar; auto slideshow moves on after the video finishes.
 - Dark emerald interface with custom rounded dialogs and adaptive launcher icon.
 
 ## Updating from older releases
