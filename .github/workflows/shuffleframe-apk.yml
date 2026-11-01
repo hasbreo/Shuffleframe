@@ -26,6 +26,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+      - name: Keep debug signature consistent for future testing updates
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: shuffleframe-debug-signing-key-v1
       - name: Compile installable APK
         run: gradle --no-daemon :app:assembleDebug --stacktrace
       - name: Prepare APK
@@ -39,8 +44,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.0 >/dev/null 2>&1; then
-            gh release upload v0.2.0 Shuffleframe.apk --clobber
+          if gh release view v0.3.0 >/dev/null 2>&1; then
+            gh release upload v0.3.0 Shuffleframe.apk --clobber
           else
-            gh release create v0.2.0 Shuffleframe.apk --title "Shuffleframe v0.2.0 (testing)" --notes "First testing build. Start with no albums; add your own Google Photos shared links in the app. Album parsing is experimental." --prerelease
+            gh release create v0.3.0 Shuffleframe.apk --title "Shuffleframe v0.3.0 (testing)" --notes "Persistent background album caching, improved fullscreen viewer with smooth swipes and tap zones. No albums preloaded. Google Photos import is experimental." --prerelease
           fi
