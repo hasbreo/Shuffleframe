@@ -522,6 +522,8 @@ public class MainActivity extends Activity {
                 toast("This Google Photos video couldn't be played. Try refreshing its album.");
                 return true;
             });
+            // VideoView needs a visible SurfaceHolder before onPrepared can fire.
+            videoView.setVisibility(View.VISIBLE);
             videoView.setVideoURI(Uri.parse(PhotoStorage.streamUrl(item)));
             videoView.requestFocus();
         }catch(Exception e){
@@ -561,7 +563,9 @@ public class MainActivity extends Activity {
         Bitmap ram=memory.get(url);
         if(ram!=null){
             spinner.setVisibility(View.GONE);
-            showBitmap(ram,direction);schedule();return;
+            showBitmap(ram,direction);
+            if(PhotoStorage.isVideo(url)&&playing)toggleVideo();
+            schedule();return;
         }
         int width=getResources().getDisplayMetrics().widthPixels;
         int height=getResources().getDisplayMetrics().heightPixels;
@@ -576,6 +580,7 @@ public class MainActivity extends Activity {
                 if(ready!=null){
                     memory.put(url,ready);
                     showBitmap(ready,direction);
+                    if(PhotoStorage.isVideo(url)&&playing)toggleVideo();
                 }else{
                     toast("Photo not available"+(failure==null?"":": "+failure));
                 }
