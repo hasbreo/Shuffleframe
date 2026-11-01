@@ -12,7 +12,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class PhotoCacheWorker extends Worker {
     static final String NAME="shuffleframe-photo-downloads";
     static final String PREFS="shuffleframe";
-    private static final int THREADS=6;
     public PhotoCacheWorker(@NonNull Context context,@NonNull WorkerParameters params){super(context,params);}
     static SharedPreferences prefs(Context c){return c.getSharedPreferences(PREFS,Context.MODE_PRIVATE);}
     static LinkedHashSet<String> urls(Context c){
@@ -61,7 +60,11 @@ public class PhotoCacheWorker extends Worker {
         ArrayList<String> missing=new ArrayList<>();
         for(String u:urls(c))if(!PhotoStorage.cached(c,u))missing.add(u);
         if(missing.isEmpty())return Result.success();
-        ExecutorService pool=Executors.newFixedThreadPool(THREADS);
+        // No artificial six-download ceiling: each pending item may run concurrently.
+        // Android, available memory, Wi-Fi and Google servers still impose physical limits.
+        ExecutorService pool=Executors.newCachedThreadPool(r->{
+            Thread t=new Thread(r,"shuffleframe-cache");t.setDaemon(true);return t;
+        });
         CompletionService<Boolean> completed=new ExecutorCompletionService<>(pool);
         AtomicInteger failures=new AtomicInteger(0);
         int submitted=0;
@@ -71,7 +74,7 @@ public class PhotoCacheWorker extends Worker {
                 submitted++;
                 completed.submit(()->{
                     if(isStopped() || Thread.currentThread().isInterrupted())return false;
-                    try{PhotoStorage.ensure(c,url);return true;}
+                    try{PhotoStorage.cacheItem(c,url);return true;}
                     catch(Exception e){return false;}
                 });
             }
