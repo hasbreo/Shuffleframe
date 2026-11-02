@@ -60,7 +60,11 @@ final class PhotoStorage {
             URI u=new URI(url);
             String h=u.getHost();
             boolean googleImage=h!=null&&h.matches("lh[3-6]\\.googleusercontent\\.com");
-            boolean googleVideo=h!=null&&(h.equals("googlevideo.com")||h.endsWith(".googlevideo.com"));
+            // =dv often redirects from lh*.googleusercontent.com to Google's video delivery CDN.
+            boolean googleVideo=h!=null&&(h.equals("googlevideo.com")||
+                h.endsWith(".googlevideo.com")||
+                h.equals("video-downloads.googleusercontent.com")||
+                h.equals("video.googleusercontent.com"));
             if(!"https".equalsIgnoreCase(u.getScheme())||!(googleImage||(video&&googleVideo)))
                 throw new IOException("Unsupported Google media URL");
             return url;
@@ -76,7 +80,8 @@ final class PhotoStorage {
             HttpURLConnection conn=(HttpURLConnection)new URL(target).openConnection();
             conn.setConnectTimeout(15000);conn.setReadTimeout(35000);
             conn.setInstanceFollowRedirects(false);
-            conn.setRequestProperty("User-Agent","Mozilla/5.0 (Android) Shuffleframe/0.5");
+            conn.setRequestProperty("User-Agent","Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36");
+            if(video)conn.setRequestProperty("Accept","video/mp4,video/quicktime,application/octet-stream,*/*");
             if(offset>0)conn.setRequestProperty("Range","bytes="+offset+"-");
             int status=conn.getResponseCode();
             if(status>=300&&status<400){
@@ -86,7 +91,7 @@ final class PhotoStorage {
                 conn.disconnect();continue;
             }
             if(status!=200&&status!=206){
-                conn.disconnect();throw new IOException("Google media HTTP "+status);
+                conn.disconnect();throw new IOException("Google media HTTP "+status+" on "+new URL(target).getHost());
             }
             return conn;
         }
@@ -137,6 +142,15 @@ final class PhotoStorage {
                 boolean append=offset>0&&response==206;
                 if(!append)offset=0;
                 long expected=conn.getContentLengthLong();
+                String mime=conn.getContentType();
+                if(mime!=null&&(mime.toLowerCase(Locale.US).contains("text/html")||
+                    mime.toLowerCase(Locale.US).contains("application/json")))
+                    throw new IOException("Google returned "+mime+" instead of video bytes");
+                if(append){
+                    String range=conn.getHeaderField("Content-Range");
+                    if(range==null||!range.startsWith("bytes "+offset+"-"))
+                        throw new IOException("Google returned the wrong resumable video range");
+                }
                 if(expected>=0&&expected>directory(c).getUsableSpace()-80L*1024*1024)
                     throw new IOException("Not enough free storage for this video");
                 long downloaded=0;
@@ -153,6 +167,13 @@ final class PhotoStorage {
                 if(expected>=0&&downloaded!=expected)
                     throw new IOException("Video download interrupted; will resume later");
                 if(part.length()<1)throw new IOException("Empty video download");
+                // Verify that the response was a playable media file before counting it as cached.
+                android.media.MediaMetadataRetriever probe=new android.media.MediaMetadataRetriever();
+                try{
+                    probe.setDataSource(part.getAbsolutePath());
+                    String duration=probe.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    if(duration==null)throw new IOException("Downloaded file isn't a recognised video");
+                }finally{try{probe.release();}catch(Exception ignored){}}
                 if(!part.renameTo(result))throw new IOException("Cannot store video");
                 return result;
             }finally{conn.disconnect();}
