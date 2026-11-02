@@ -34,12 +34,13 @@ jobs:
         with:
           path: ~/.android/debug.keystore
           key: shuffleframe-debug-signing-key-v2
-      - name: Create persistent debug signing key if needed
+      - name: Require the exact pinned v0.7 signing key from Actions cache
         run: |
-          mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair -keystore "$HOME/.android/debug.keystore" -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000 -noprompt
-          fi
+          set -euo pipefail
+          test -s "$HOME/.android/debug.keystore" || { echo "::error::Signing key cache missing. Refusing to create another random key."; exit 1; }
+          KEY_SHA=$(keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | sed -n 's/.*SHA256: //p' | head -n1 | tr -d ':' | tr 'A-F' 'a-f')
+          echo "Pinned key SHA-256: $KEY_SHA"
+          test "$KEY_SHA" = "939dd42cebe0219bfc3dc4a851fc862d7a339245a317bcdd7cf591d9caea0e8e" || { echo "::error::Signing key changed. Refusing to build a non-updatable APK."; exit 1; }
       - name: Diagnose restored signing key and Gradle signing path
         run: |
           echo "Cached keystore identity:"
@@ -50,38 +51,29 @@ jobs:
         run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - name: Prepare APK
         run: cp app/build/outputs/apk/debug/app-debug.apk Shuffleframe.apk
-      - name: Verify same signing certificate and package as installed v0.6
+      - name: Verify APK matches pinned stable signing certificate
+        run: |
+          set -euo pipefail
+          SIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          SIGN_SHA=$("$SIGNER" verify --print-certs Shuffleframe.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)
+          PACKAGE=$("$AAPT" dump badging Shuffleframe.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          VERSION=$("$AAPT" dump badging Shuffleframe.apk | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p" | head -n1)
+          echo "Signed APK certificate SHA-256: $SIGN_SHA"
+          echo "Package: $PACKAGE versionCode=$VERSION"
+          test "$SIGN_SHA" = "939dd42cebe0219bfc3dc4a851fc862d7a339245a317bcdd7cf591d9caea0e8e" || { echo "::error::APK signature is not the pinned v0.7 key."; exit 1; }
+          test "$PACKAGE" = 'com.hasbreo.shuffleframe' || { echo "::error::Package identity changed"; exit 1; }
+          test "$VERSION" = 7 || { echo "::error::Version code must be 7"; exit 1; }
+      - name: Restore authentic v0.6 release from immutable historical artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/shuffleframe-v06
-          # This original v0.6.0 artifact is immutable. The old release asset was
-          # subsequently overwritten by older in-flight workflows.
-          gh run download 41383507788 --repo "$GITHUB_REPOSITORY" --name Shuffleframe-APK --dir /tmp/shuffleframe-v06
-          OLD=/tmp/shuffleframe-v06/Shuffleframe.apk
-          NEW=Shuffleframe.apk
-          SIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
-          OLD_SHA=$("$SIGNER" verify --print-certs "$OLD" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)
-          NEW_SHA=$("$SIGNER" verify --print-certs "$NEW" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)
-          test -n "$OLD_SHA"
-          test -n "$NEW_SHA"
-          echo "Installed v0.6 signing fingerprint: $OLD_SHA"
-          echo "New v0.7 signing fingerprint:       $NEW_SHA"
-          test "$OLD_SHA" = "$NEW_SHA" || { echo "::error::Signing key differs from v0.6. APK not published."; exit 1; }
-          OLD_PACKAGE=$("$AAPT" dump badging "$OLD" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
-          NEW_PACKAGE=$("$AAPT" dump badging "$NEW" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
-          NEW_CODE=$("$AAPT" dump badging "$NEW" | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p" | head -n1)
-          echo "Package ID: $NEW_PACKAGE; new versionCode: $NEW_CODE"
-          test "$OLD_PACKAGE" = 'com.hasbreo.shuffleframe'
-          test "$NEW_PACKAGE" = "$OLD_PACKAGE" || { echo "::error::Package ID changed"; exit 1; }
-          test "$NEW_CODE" = 7 || { echo "::error::Incorrect update version"; exit 1; }
-          echo "Verified: v0.7 uses v0.6 signing cert and package ID."
-      - name: Restore authentic v0.6 release APK from original build artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload v0.6.0 /tmp/shuffleframe-v06/Shuffleframe.apk --clobber
+          mkdir -p /tmp/shuffleframe-original-v06
+          gh run download 41383507788 --repo "$GITHUB_REPOSITORY" --name Shuffleframe-APK --dir /tmp/shuffleframe-original-v06
+          OLD_SHA=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs /tmp/shuffleframe-original-v06/Shuffleframe.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)
+          test "$OLD_SHA" = '75d72de39becbd463cefdd02b726d1dfe69dc61b3bd7402aa9d6074b7b422985' || { echo "::error::Original v0.6 artifact changed"; exit 1; }
+          gh release upload v0.6.0 /tmp/shuffleframe-original-v06/Shuffleframe.apk --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: Shuffleframe-APK
@@ -94,5 +86,5 @@ jobs:
           if gh release view v0.7.0 >/dev/null 2>&1; then
             gh release upload v0.7.0 Shuffleframe.apk --clobber
           else
-            gh release create v0.7.0 Shuffleframe.apk --title "Shuffleframe v0.7.0 (testing)" --notes "Fix Google Photos video-download redirects, separately display video counts and failures, Retry missing videos, show app version. Verified same signing certificate and package as v0.6 to preserve cache." --prerelease
+            gh release create v0.7.0 Shuffleframe.apk --title "Shuffleframe v0.7.0 (testing)" --notes "Fix video CDN downloads and add video diagnostics, retry and app version. IMPORTANT: v0.6 used a lost ephemeral signing key. Back up cache with migration scripts before uninstalling v0.6. v0.7 uses a pinned key for future updates." --prerelease
           fi
