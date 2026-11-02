@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: shuffleframe-releases
+  cancel-in-progress: false
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -41,6 +44,32 @@ jobs:
         run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - name: Prepare APK
         run: cp app/build/outputs/apk/debug/app-debug.apk Shuffleframe.apk
+      - name: Verify same signing certificate and package as installed v0.6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/shuffleframe-v06
+          gh release download v0.6.0 --repo "$GITHUB_REPOSITORY" --pattern 'Shuffleframe.apk' --dir /tmp/shuffleframe-v06
+          OLD=/tmp/shuffleframe-v06/Shuffleframe.apk
+          NEW=Shuffleframe.apk
+          SIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          OLD_SHA=$("$SIGNER" verify --print-certs "$OLD" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)
+          NEW_SHA=$("$SIGNER" verify --print-certs "$NEW" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)
+          test -n "$OLD_SHA"
+          test -n "$NEW_SHA"
+          echo "Installed v0.6 signing fingerprint: $OLD_SHA"
+          echo "New v0.7 signing fingerprint:       $NEW_SHA"
+          test "$OLD_SHA" = "$NEW_SHA" || { echo "::error::Signing key differs from v0.6. APK not published."; exit 1; }
+          OLD_PACKAGE=$("$AAPT" dump badging "$OLD" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          NEW_PACKAGE=$("$AAPT" dump badging "$NEW" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          NEW_CODE=$("$AAPT" dump badging "$NEW" | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p" | head -n1)
+          echo "Package ID: $NEW_PACKAGE; new versionCode: $NEW_CODE"
+          test "$OLD_PACKAGE" = 'com.hasbreo.shuffleframe'
+          test "$NEW_PACKAGE" = "$OLD_PACKAGE" || { echo "::error::Package ID changed"; exit 1; }
+          test "$NEW_CODE" = 7 || { echo "::error::Incorrect update version"; exit 1; }
+          echo "Verified: v0.7 uses v0.6 signing cert and package ID."
       - uses: actions/upload-artifact@v4
         with:
           name: Shuffleframe-APK
@@ -50,8 +79,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.6.0 >/dev/null 2>&1; then
-            gh release upload v0.6.0 Shuffleframe.apk --clobber
+          if gh release view v0.7.0 >/dev/null 2>&1; then
+            gh release upload v0.7.0 Shuffleframe.apk --clobber
           else
-            gh release create v0.6.0 Shuffleframe.apk --title "Shuffleframe v0.6.0 (testing)" --notes "Import all pages of large shared albums, including video entries. Show import progress, de-duplicate media, and keep prior saved albums on failure. Includes synthetic 1500-item pagination tests." --prerelease
+            gh release create v0.7.0 Shuffleframe.apk --title "Shuffleframe v0.7.0 (testing)" --notes "Fix Google Photos video-download redirects, separately display video counts and failures, Retry missing videos, show app version. Verified same signing certificate and package as v0.6 to preserve cache." --prerelease
           fi
