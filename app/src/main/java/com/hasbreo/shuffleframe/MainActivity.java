@@ -68,7 +68,7 @@ public class MainActivity extends Activity {
     private int seconds=5;
     private FrameLayout imageLayer;
     private LinearLayout topOverlay,bottomOverlay;
-    private TextView cacheSummary;
+    private TextView cacheSummary,videoDiagnostics;
     private VideoView videoView;
     private LinearLayout videoStrip;
     private TextView videoButton,videoTime;
@@ -156,6 +156,8 @@ public class MainActivity extends Activity {
         addTop(body,text(included.size()+" items ("+(included.size()-videoTotal)+" photos, "+videoTotal+" videos)  ·  "+selected+" albums",13,MINT,true),26);
         cacheSummary=text("",13,DIM,false);
         addTop(body,cacheSummary,6);
+        videoDiagnostics=text("",12,0xffdaab82,false);
+        addTop(body,videoDiagnostics,7);
         addTop(body,button("Start random shuffle  →",true,v->start()),12);
         addTop(body,button("+  Add shared Google Photos album",false,v->addAlbum()),10);
         LinearLayout intervalCard=vertical();
@@ -206,8 +208,14 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(0,-2,1);rp.leftMargin=dp(8);controls.addView(remove,rp);
             addTop(card,controls,12);addTop(body,card,12);
         }
-        addTop(body,button("↻  Refresh all albums",false,v->{for(Album a:new ArrayList<>(albums))refresh(a);}),20);
+        addTop(body,button("↻  Retry missing video downloads",false,v->{
+            PhotoCacheWorker.schedule(this);
+            toast("Retrying uncached videos; saved photos won't download again");
+            updateCacheStatus();
+        }),18);
+        addTop(body,button("↻  Refresh all albums",false,v->{for(Album a:new ArrayList<>(albums))refresh(a);}),10);
         addTop(body,text("Photos and videos are saved to private app storage. Full videos can use significant space. Downloads resume when possible; album refresh requires internet.",12,DIM,false),18);
+        addTop(body,text("Shuffleframe v"+installedVersion(),12,0xff93b9a6,false),18);
         setContentView(sv);updateCacheStatus();handler.postDelayed(cacheTicker,1750);
     }
     Dialog sheet(String title,String description, LinearLayout body){
@@ -319,18 +327,41 @@ public class MainActivity extends Activity {
         for(Album a:albums)result.addAll(a.photos);
         return result;
     }
+    String installedVersion(){
+        try{
+            android.content.pm.PackageInfo pkg=getPackageManager().getPackageInfo(getPackageName(),0);
+            return pkg.versionName+" · build "+pkg.versionCode;
+        }catch(Exception ignored){return "unknown";}
+    }
     void updateCacheStatus(){
         if(viewer)return;
         LinkedHashSet<String> all=allPhotos();
-        int cached=PhotoStorage.count(this,all);
+        int totalPhotos=0,cachedPhotos=0,totalVideos=0,cachedVideos=0;
+        for(String item:all){
+            if(PhotoStorage.isVideo(item)){
+                totalVideos++;
+                if(PhotoStorage.cached(this,item))cachedVideos++;
+            }else{
+                totalPhotos++;
+                if(PhotoStorage.cached(this,item))cachedPhotos++;
+            }
+        }
+        long mb=PhotoStorage.bytes(this)/(1024*1024);
         if(cacheSummary!=null){
-            long mb=PhotoStorage.bytes(this)/(1024*1024);
-            cacheSummary.setText("Saved offline: "+cached+" / "+all.size()+" items · "+mb+" MB"+
-                (cached<all.size()?"  ·  Downloading in background":"  ·  Ready offline"));
+            cacheSummary.setText("Saved: "+cachedPhotos+"/"+totalPhotos+" photos · "+
+                cachedVideos+"/"+totalVideos+" videos · "+mb+" MB"+
+                (cachedPhotos+cachedVideos==all.size()?" · Ready offline":""));
+        }
+        if(videoDiagnostics!=null){
+            String error=PhotoCacheWorker.prefs(this).getString("last_video_error","");
+            int failures=PhotoCacheWorker.prefs(this).getInt("video_failures",0);
+            videoDiagnostics.setText(failures>0?"Video download errors ("+failures+"): "+error:"");
+            videoDiagnostics.setVisibility(failures>0?View.VISIBLE:View.GONE);
         }
         for(Map.Entry<Album,TextView> entry:albumCacheLabels.entrySet()){
-            Album a=entry.getKey();int count=PhotoStorage.count(this,new LinkedHashSet<>(a.photos));
-            entry.getValue().setText(count+" / "+a.photos.size()+" cached offline");
+            Album a=entry.getKey();
+            int count=PhotoStorage.count(this,new LinkedHashSet<>(a.photos));
+            entry.getValue().setText(count+" / "+a.photos.size()+" saved offline");
         }
     }
     LinkedHashSet<String> photos(){
