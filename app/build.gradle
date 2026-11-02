@@ -14,6 +14,23 @@ android {
         versionName '0.7.0'
     }
 
+    // Use the SAME persisted keystore on every CI run. Android Gradle's default
+    // is XDG_CONFIG_HOME/.android on GitHub runners, which was not the cached path.
+    signingConfigs {
+        debug {
+            storeFile file(System.getProperty('user.home') + '/.android/debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
