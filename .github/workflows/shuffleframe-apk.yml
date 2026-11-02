@@ -40,6 +40,12 @@ jobs:
           if [ ! -f "$HOME/.android/debug.keystore" ]; then
             keytool -genkeypair -keystore "$HOME/.android/debug.keystore" -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000 -noprompt
           fi
+      - name: Diagnose restored signing key and Gradle signing path
+        run: |
+          echo "Cached keystore identity:"
+          keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | grep -E 'SHA256:|Owner:' || true
+          echo "Gradle configured signing identity:"
+          gradle --no-daemon :app:signingReport | grep -E 'Variant:|Config:|Store:|SHA-256:' || true
       - name: Compile installable APK
         run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - name: Prepare APK
