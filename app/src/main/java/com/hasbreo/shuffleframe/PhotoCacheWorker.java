@@ -60,9 +60,11 @@ public class PhotoCacheWorker extends Worker {
         ArrayList<String> missing=new ArrayList<>();
         for(String u:urls(c))if(!PhotoStorage.cached(c,u))missing.add(u);
         if(missing.isEmpty())return Result.success();
-        // No artificial six-download ceiling: each pending item may run concurrently.
-        // Android, available memory, Wi-Fi and Google servers still impose physical limits.
-        ExecutorService pool=Executors.newCachedThreadPool(r->{
+        // Large albums can contain thousands of items. Avoid launching thousands of
+        // network threads at once and exhausting Android memory or file descriptors.
+        // Still uses substantially more concurrent connections than the original six.
+        int parallel=Math.min(24,Math.max(12,Runtime.getRuntime().availableProcessors()*3));
+        ExecutorService pool=Executors.newFixedThreadPool(parallel,r->{
             Thread t=new Thread(r,"shuffleframe-cache");t.setDaemon(true);return t;
         });
         CompletionService<Boolean> completed=new ExecutorCompletionService<>(pool);
