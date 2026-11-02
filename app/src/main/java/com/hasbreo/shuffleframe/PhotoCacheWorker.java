@@ -8,6 +8,7 @@ import org.json.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class PhotoCacheWorker extends Worker {
     static final String NAME="shuffleframe-photo-downloads";
@@ -69,6 +70,10 @@ public class PhotoCacheWorker extends Worker {
         });
         CompletionService<Boolean> completed=new ExecutorCompletionService<>(pool);
         AtomicInteger failures=new AtomicInteger(0);
+        AtomicInteger videoFailures=new AtomicInteger(0);
+        AtomicInteger videoDone=new AtomicInteger(0);
+        AtomicReference<String> lastVideoError=new AtomicReference<>("");
+        prefs(c).edit().remove("last_video_error").putInt("video_failures",0).apply();
         int submitted=0;
         try{
             for(String url:missing){
@@ -76,8 +81,21 @@ public class PhotoCacheWorker extends Worker {
                 submitted++;
                 completed.submit(()->{
                     if(isStopped() || Thread.currentThread().isInterrupted())return false;
-                    try{PhotoStorage.cacheItem(c,url);return true;}
-                    catch(Exception e){return false;}
+                    try{
+                        PhotoStorage.cacheItem(c,url);
+                        if(PhotoStorage.isVideo(url))videoDone.incrementAndGet();
+                        return true;
+                    }catch(Exception e){
+                        if(PhotoStorage.isVideo(url)){
+                            videoFailures.incrementAndGet();
+                            String message=e.getMessage();
+                            if(message==null||message.isEmpty())message=e.getClass().getSimpleName();
+                            // Never persist private Google Photos URLs or tokens in error diagnostics.
+                            message=message.replaceAll("https?://\\S+","[media URL]");
+                            lastVideoError.set(message.length()>160?message.substring(0,160):message);
+                        }
+                        return false;
+                    }
                 });
             }
             int done=0;
@@ -87,11 +105,17 @@ public class PhotoCacheWorker extends Worker {
                     boolean ok=completed.take().get();
                     done++;
                     if(!ok)failures.incrementAndGet();
-                    if(done%4==0 || done==submitted)
+                    if(done%4==0 || done==submitted){
                         setProgressAsync(new Data.Builder()
                             .putInt("completed",done)
                             .putInt("total",submitted)
-                            .putInt("failed",failures.get()).build());
+                            .putInt("failed",failures.get())
+                            .putInt("video_failed",videoFailures.get()).build());
+                        prefs(c).edit()
+                            .putInt("video_failures",videoFailures.get())
+                            .putString("last_video_error",lastVideoError.get())
+                            .putInt("video_downloaded_run",videoDone.get()).apply();
+                    }
                 }catch(InterruptedException ex){
                     Thread.currentThread().interrupt();break;
                 }catch(ExecutionException ex){failures.incrementAndGet();}
@@ -101,6 +125,9 @@ public class PhotoCacheWorker extends Worker {
             pool.shutdownNow();
         }
         PhotoStorage.prune(c,urls(c));
+        prefs(c).edit().putInt("video_failures",videoFailures.get())
+            .putString("last_video_error",lastVideoError.get())
+            .putInt("video_downloaded_run",videoDone.get()).apply();
         // No unbounded retries. Failed media can retry on refresh or next app launch.
         return Result.success(new Data.Builder()
             .putInt("failed",failures.get()).build());
