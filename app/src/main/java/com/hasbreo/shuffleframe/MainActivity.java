@@ -86,6 +86,7 @@ public class MainActivity extends Activity {
         }
     };
     private final Map<Album,TextView> albumCacheLabels=new HashMap<>();
+    private final Map<Album,TextView> albumImportLabels=new HashMap<>();
     private boolean overlaysVisible=true;
     private final LruCache<String,Bitmap> memory=new LruCache<String,Bitmap>(32*1024) {
         @Override protected int sizeOf(String key,Bitmap value){return Math.max(1,value.getByteCount()/1024);}
@@ -98,6 +99,7 @@ public class MainActivity extends Activity {
     static final class Album {
         String title,url;
         boolean enabled=true, loading=false;
+        int importCount=0, importPages=0;
         ArrayList<String> photos=new ArrayList<>();
         Album(String title,String url){this.title=title;this.url=url;}
         JSONObject json() throws Exception {
@@ -142,7 +144,7 @@ public class MainActivity extends Activity {
     void toast(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
     void home(){
         if(viewer)return;
-        albumCacheLabels.clear();handler.removeCallbacks(cacheTicker);
+        albumCacheLabels.clear();albumImportLabels.clear();handler.removeCallbacks(cacheTicker);
         ScrollView sv=new ScrollView(this);sv.setFillViewport(true);sv.setBackgroundColor(BG);
         LinearLayout body=vertical();body.setPadding(dp(20),dp(30),dp(20),dp(32));sv.addView(body);
         body.addView(text("◈  SHUFFLEFRAME",14,MINT,true));
@@ -188,7 +190,10 @@ public class MainActivity extends Activity {
             check.setChecked(a.enabled);check.setOnCheckedChangeListener((v,c)->{a.enabled=c;save();home();});
             top.addView(check);LinearLayout name=vertical();name.addView(text(a.title,17,INK,true));
             int videos=0;for(String item:a.photos)if(PhotoStorage.isVideo(item))videos++;
-            name.addView(text(a.loading?"Loading media…":(a.photos.size()-videos)+" photos · "+videos+" videos",13,DIM,false));
+            TextView importLabel=text(a.loading?
+                "Importing: "+a.importCount+" found · page "+Math.max(1,a.importPages):
+                (a.photos.size()-videos)+" photos · "+videos+" videos",13,DIM,false);
+            name.addView(importLabel);albumImportLabels.put(a,importLabel);
             TextView cacheLabel=text("",12,MINT,false);name.addView(cacheLabel);
             albumCacheLabels.put(a,cacheLabel);
             top.addView(name,new LinearLayout.LayoutParams(0,-2,1));card.addView(top);
@@ -277,23 +282,35 @@ public class MainActivity extends Activity {
         if(w!=null)w.setLayout(getResources().getDisplayMetrics().widthPixels-dp(38),WindowManager.LayoutParams.WRAP_CONTENT);
     }
     void refresh(Album a){
-        if(a.loading)return; a.loading=true;home();
+        if(a.loading)return;
+        a.loading=true;a.importCount=0;a.importPages=0;home();
         worker.execute(()->{
-            try {
-                SharedAlbumReader.Result result=SharedAlbumReader.fetch(a.url);
+            try{
+                // Only commit to the saved album after ALL continuation pages succeed.
+                SharedAlbumReader.Result result=SharedAlbumReader.fetch(a.url,(count,pages)->
+                    runOnUiThread(()->{
+                        if(!albums.contains(a)||!a.loading)return;
+                        a.importCount=count;a.importPages=pages;
+                        TextView label=albumImportLabels.get(a);
+                        if(label!=null)label.setText("Importing: "+count+" found · page "+pages);
+                    }));
                 runOnUiThread(()->{
                     if(!albums.contains(a))return;
                     a.loading=false;
-                    if(result.images.isEmpty()){toast("No photos found. Check album link or try again.");home();return;}
                     a.photos=new ArrayList<>(result.images);
                     if(a.title.startsWith("Shared album")||a.title.equals("My first album")){
                         if(result.title!=null&&!result.title.isEmpty())a.title=result.title;
                     }
                     save();PhotoCacheWorker.schedule(this);home();
-                    if(result.partial)toast("Loaded "+a.photos.size()+" photos, but there may be more pages to load.");
+                    toast("Imported "+a.photos.size()+" photos and videos across "+result.pages+" pages");
                 });
-            } catch(Exception e){
-                runOnUiThread(()->{a.loading=false;home();toast("Album refresh failed: "+e.getMessage());});
+            }catch(Exception e){
+                runOnUiThread(()->{
+                    if(!albums.contains(a))return;
+                    a.loading=false;home();
+                    // NEVER delete the previous 300 already saved on a failed import.
+                    toast("Full album refresh failed; previous photos kept. "+e.getMessage());
+                });
             }
         });
     }
