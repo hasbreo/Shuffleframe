@@ -50,7 +50,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/shuffleframe-v06
-          gh release download v0.6.0 --repo "$GITHUB_REPOSITORY" --pattern 'Shuffleframe.apk' --dir /tmp/shuffleframe-v06
+          # This original v0.6.0 artifact is immutable. The old release asset was
+          # subsequently overwritten by older in-flight workflows.
+          gh run download 41383507788 --repo "$GITHUB_REPOSITORY" --name Shuffleframe-APK --dir /tmp/shuffleframe-v06
           OLD=/tmp/shuffleframe-v06/Shuffleframe.apk
           NEW=Shuffleframe.apk
           SIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
@@ -70,6 +72,10 @@ jobs:
           test "$NEW_PACKAGE" = "$OLD_PACKAGE" || { echo "::error::Package ID changed"; exit 1; }
           test "$NEW_CODE" = 7 || { echo "::error::Incorrect update version"; exit 1; }
           echo "Verified: v0.7 uses v0.6 signing cert and package ID."
+      - name: Restore authentic v0.6 release APK from original build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v0.6.0 /tmp/shuffleframe-v06/Shuffleframe.apk --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: Shuffleframe-APK
