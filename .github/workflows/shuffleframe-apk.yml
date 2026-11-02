@@ -38,7 +38,7 @@ jobs:
             keytool -genkeypair -keystore "$HOME/.android/debug.keystore" -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000 -noprompt
           fi
       - name: Compile installable APK
-        run: gradle --no-daemon :app:assembleDebug --stacktrace
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - name: Prepare APK
         run: cp app/build/outputs/apk/debug/app-debug.apk Shuffleframe.apk
       - uses: actions/upload-artifact@v4
@@ -50,8 +50,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.5.0 >/dev/null 2>&1; then
-            gh release upload v0.5.0 Shuffleframe.apk --clobber
+          if gh release view v0.6.0 >/dev/null 2>&1; then
+            gh release upload v0.6.0 Shuffleframe.apk --clobber
           else
-            gh release create v0.5.0 Shuffleframe.apk --title "Shuffleframe v0.5.0 (testing)" --notes "Full offline video downloads with resume, video autoplay and seeking, no fixed six-download cap, slideshow interval setting, fixed repeatable shuffle order, clean player controls. Experimental shared-album importer." --prerelease
+            gh release create v0.6.0 Shuffleframe.apk --title "Shuffleframe v0.6.0 (testing)" --notes "Import all pages of large shared albums, including video entries. Show import progress, de-duplicate media, and keep prior saved albums on failure. Includes synthetic 1500-item pagination tests." --prerelease
           fi
